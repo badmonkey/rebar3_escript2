@@ -21,14 +21,17 @@
 %% OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 %% THE SOFTWARE.
 %% -------------------------------------------------------------------
+%% Modifications by Michael Fagan
+%%
 -module(rebar3_escript2_escriptize).
 
 -behaviour(provider).
 
 -export([init/1, do/1, format_error/1]).
 
--define(PROVIDER, escriptize).
--define(DEPS, [compile]).
+-define(PROVIDER, build).
+%-define(PROVIDER, escriptize).
+-define(DEPS, [{default, compile}]).
 
 
 -define(PRV_ERROR(Reason), {error, {?MODULE, Reason}}).
@@ -63,6 +66,8 @@ do(State) ->
     Providers = rebar_state:providers(State),
     Cwd = rebar_state:dir(State),
     rebar_hooks:run_project_and_app_hooks(Cwd, pre, ?PROVIDER, Providers, State),
+%	rebar_api:debug("Current ~p", [rebar_state:current_app(State)]),
+%	rebar_api:debug("Project ~p", [rebar_state:project_apps(State)]),
     rebar_api:info("Building escript...", []),
     Res = case rebar_state:get(State, escript_main_app, undefined) of
         undefined ->
@@ -98,14 +103,13 @@ escriptize(State0, App) ->
     %% Look for a list of other applications (dependencies) to include
     %% in the output file. We then use the .app files for each of these
     %% to pull in all the .beam files.
-    TopInclApps = lists:usort([ec_cnv:to_atom(AppName) | rebar_state:get(State, escript_incl_apps, [])]),
+	ThisApp = ec_cnv:to_atom(AppName),
+    TopInclApps = lists:usort([ThisApp | rebar_state:get(State, escript_incl_apps, [])]),
     AllApps = rebar_state:all_deps(State)++rebar_state:project_apps(State),
     InclApps = find_deps(TopInclApps, AllApps),
-    InclBeams = get_apps_beams(InclApps, AllApps),
 
-    %% Look for a list of extra files to include in the output file.
-    %% For internal rebar-private use only. Do not use outside rebar.
-    InclExtra = get_extra(State),
+    InclBeams = get_apps_beams(InclApps, AllApps),
+    InclExtra = get_app_extras(InclApps, State),
 
     %% Construct the archive of everything in ebin/ dir -- put it on the
     %% top-level of the zip file so that code loading works properly.
@@ -176,15 +180,15 @@ get_app_beams(App, Path) ->
     load_files(Prefix, "*.beam", Path) ++
         load_files(Prefix, "*.app", Path).
 
-get_extra(State) ->
-    Extra = rebar_state:get(State, escript_incl_extra, []),
-    Prefix = atom_to_list(App),
+
+get_app_extras(Apps, State) ->
+	rebar_api:info("Gathering ~p", [Apps]),
+    Extra = rebar_state:get(State, escript2_extra_files, []),
+    Prefix = "fubar",  %atom_to_list(App),
     lists:foldl(fun({Wildcard, Dir}, Files) ->
                         load_files(Prefix, Wildcard, Dir) ++ Files
                 end, [], Extra).
 
-load_files(Wildcard, Dir) ->
-    load_files("", Wildcard, Dir).
 
 load_files(Prefix, Wildcard, Dir) ->
     [read_file(Prefix, Filename, Dir)
