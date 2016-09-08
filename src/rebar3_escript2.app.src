@@ -1,0 +1,21 @@
+
+{ application, 'rebar3_escript2'
+, [ {description, "A rebar plugin"}
+  , {vsn, "0.1.0"}
+  , {registered, []}
+  , { applications
+    , [ kernel, stdlib
+      ]
+    }
+  , {env,[]}
+  , { modules
+    , [ rebar3_escript2
+      , rebar3_escript2_escriptize
+      ]
+    }
+
+  , {maintainers, ["Michael Fagan"]}
+  , {licenses, ["Apache"]}
+  , {links, [{"Github", "https://github.com/badmonkey/rebar3_escript2"}]}
+ ]}.
+ 
