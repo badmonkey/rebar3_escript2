@@ -7,7 +7,7 @@
 -export([init/1, do/1, format_error/1]).
 
 -define(PROVIDER, clean).
--define(DEPS, []).
+-define(DEPS, [{default, clean}]).
 
 
 -define(PRV_ERROR(Reason), {error, {?MODULE, Reason}}).
@@ -37,7 +37,12 @@ desc() ->
     "Remove executable escript files".
 
 do(State) ->
-    rebar_api:info("Cleaning escript...", []),
+	Cwd = rebar_state:dir(State),
+    Providers = rebar_state:providers(State),
+    rebar_hooks:run_all_hooks(
+      Cwd, pre, {escript2, ?PROVIDER}, Providers, State),
+
+    rebar_api:info("Cleaning escripts...", []),
     Res = case rebar_state:get(State, escript_main_app, undefined) of
         undefined ->
             case rebar_state:project_apps(State) of
@@ -55,6 +60,10 @@ do(State) ->
                     ?PRV_ERROR({bad_name, Name})
             end
     end,
+
+	rebar_hooks:run_all_hooks(
+	  Cwd, post, {escript2, ?PROVIDER}, Providers, State),
+
     Res.
 
     
@@ -64,11 +73,19 @@ clean_escript(State0, App) ->
     %% Get the output filename for the escript -- this may include dirs
     Filename = filename:join([rebar_dir:base_dir(State0), "bin",
                               rebar_state:get(State0, escript_name, AppName)]),
-    rebar_api:info("Cleaning escript file ~s", [Filename]),
+    rebar_api:debug("Deleting file ~s", [Filename]),
+	rebar_file_utils:delete_each([Filename]),
+
     {ok, State0}.
     
     
+
 -spec format_error(any()) -> iolist().
-format_error({write_failed, AppName, WriteError}) ->
-    io_lib:format("Failed to write ~p script: ~p", [AppName, WriteError]).
+format_error({bad_name, App}) ->
+    io_lib:format("Failed to get ebin/ directory for "
+                   "escript_incl_app: ~p", [App]);
+format_error(no_main_app) ->
+    io_lib:format("Multiple project apps and {escript_main_app, atom()}."
+                 " not set in rebar.config", []).
+
     
