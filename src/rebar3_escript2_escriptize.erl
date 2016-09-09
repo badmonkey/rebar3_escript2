@@ -66,8 +66,6 @@ do(State) ->
     Providers = rebar_state:providers(State),
     Cwd = rebar_state:dir(State),
     rebar_hooks:run_project_and_app_hooks(Cwd, pre, ?PROVIDER, Providers, State),
-%	rebar_api:debug("Current ~p", [rebar_state:current_app(State)]),
-%	rebar_api:debug("Project ~p", [rebar_state:project_apps(State)]),
     rebar_api:info("Building escript...", []),
     Res = case rebar_state:get(State, escript_main_app, undefined) of
         undefined ->
@@ -103,7 +101,7 @@ escriptize(State0, App) ->
     %% Look for a list of other applications (dependencies) to include
     %% in the output file. We then use the .app files for each of these
     %% to pull in all the .beam files.
-	ThisApp = ec_cnv:to_atom(AppName),
+    ThisApp = ec_cnv:to_atom(AppName),
     TopInclApps = lists:usort([ThisApp | rebar_state:get(State, escript_incl_apps, [])]),
     AllApps = rebar_state:all_deps(State)++rebar_state:project_apps(State),
     InclApps = find_deps(TopInclApps, AllApps),
