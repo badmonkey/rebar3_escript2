@@ -23,7 +23,7 @@
 %% -------------------------------------------------------------------
 %% Modifications by Michael Fagan
 %%
--module(rebar3_escript2_escriptize).
+-module(rebar3_escript2_build).
 
 -behaviour(provider).
 
@@ -51,7 +51,7 @@ init(State) ->
                                 {namespace, escript2},
                                 {bare, true},
                                 {deps, ?DEPS},
-                                {example, "rebar3 escript2 escriptize"},
+                                {example, "rebar3 escript2 build"},
                                 {opts, []},
                                 {short_desc, "Generate escript archive."},
                                 {desc, desc()}
@@ -66,7 +66,6 @@ do(State) ->
     Providers = rebar_state:providers(State),
     Cwd = rebar_state:dir(State),
     rebar_hooks:run_project_and_app_hooks(Cwd, pre, ?PROVIDER, Providers, State),
-    rebar_api:info("Building escript...", []),
     Res = case rebar_state:get(State, escript_main_app, undefined) of
         undefined ->
             case rebar_state:project_apps(State) of
@@ -92,9 +91,10 @@ escriptize(State0, App) ->
     AppNameStr = ec_cnv:to_list(AppName),
 
     %% Get the output filename for the escript -- this may include dirs
-    Filename = filename:join([rebar_dir:base_dir(State0), "bin",
-                              rebar_state:get(State0, escript_name, AppName)]),
-    rebar_api:debug("Creating escript file ~s", [Filename]),
+    ScriptName = rebar_state:get(State0, escript_name, AppName),
+    Filename = filename:join([rebar_dir:base_dir(State0), "bin", ScriptName]),
+    rebar_api:info("Building escript ~s", [ScriptName]),
+    rebar_api:debug("Writing escript file ~s", [Filename]),
     ok = filelib:ensure_dir(Filename),
     State = rebar_state:escript_path(State0, Filename),
 
@@ -106,8 +106,8 @@ escriptize(State0, App) ->
     AllApps = rebar_state:all_deps(State)++rebar_state:project_apps(State),
     InclApps = find_deps(TopInclApps, AllApps),
 
-    InclBeams = get_apps_beams(InclApps, AllApps),
-    InclExtra = get_app_extras(InclApps, State),
+    InclBeams = get_app_beams(InclApps, AllApps),
+    InclExtra = get_app_extras(InclApps, AllApps),
 
     %% Construct the archive of everything in ebin/ dir -- put it on the
     %% top-level of the zip file so that code loading works properly.
@@ -136,6 +136,7 @@ escriptize(State0, App) ->
     ok = file:change_mode(Filename, Mode bor 8#00111),
     {ok, State}.
 
+    
 -spec format_error(any()) -> iolist().
 format_error({write_failed, AppName, WriteError}) ->
     io_lib:format("Failed to write ~p script: ~p", [AppName, WriteError]);
@@ -152,60 +153,98 @@ format_error(no_main_app) ->
 %% Internal functions
 %% ===================================================================
 
-get_apps_beams(Apps, AllApps) ->
-    get_apps_beams(Apps, AllApps, []).
 
-get_apps_beams([], _, Acc) ->
+get_app_beams(Apps, AllApps) ->
+    gather_many_files(Apps, AllApps, ebin, ["*.beam", "*.app"]).
+
+        
+get_app_extras(Apps, AllApps) ->
+    gather_many_files(Apps, AllApps, priv, ["*"]) ++
+    gather_many_files(Apps, AllApps, include, ["*"]).
+    
+
+%% Worry about this when we need those extra files - maybe reuse relx:overlays?
+%    Extra = rebar_state:get(State, escript2_extra_files, []),
+%    Prefix = "fubar",  %atom_to_list(App),
+%    lists:foldl(fun({Wildcard, Dir}, Files) ->
+%                        load_files(Prefix, Wildcard, Dir) ++ Files
+%                end, [], Extra).
+
+                
+%%%%% ------------------------------------------------------- %%%%%
+  
+
+-spec gather_files(atom(), string(), atom() | string(), string() ) -> list().
+
+gather_files(App, Path, Dir, Wildcards) ->
+    FromDir = filename:join(Path, Dir),
+    ToDir = filename:join(App, Dir),
+    [ load_files(ToDir, W, FromDir) || W <- Wildcards ].
+    
+gather_many_files(Apps, AllApps, Dir, Wildcards) ->
+    AppPaths = get_app_paths(Apps, AllApps, []),
+    [ debug_files(App, Dir, gather_files(App, Path, Dir, Wildcards)) || {App, Path} <- AppPaths ].
+
+
+get_app_paths([], _, Acc) ->
     Acc;
-get_apps_beams([App | Rest], AllApps, Acc) ->
+    
+get_app_paths([App | Rest], AllApps, Acc) ->    
     case rebar_app_utils:find(ec_cnv:to_binary(App), AllApps) of
-        {ok, App1} ->
-            OutDir = filename:absname(rebar_app_info:ebin_dir(App1)),
-            Beams = get_app_beams(App, OutDir),
-            get_apps_beams(Rest, AllApps, Beams ++ Acc);
-        _->
-            case code:lib_dir(App, ebin) of
-                {error, bad_name} ->
-                    throw(?PRV_ERROR({bad_name, App}));
-                Path ->
-                    Beams = get_app_beams(App, Path),
-                    get_apps_beams(Rest, AllApps, Beams ++ Acc)
+        {ok, App1}  ->
+            AppDir = filename:absname(rebar_app_info:out_dir(App1)),
+            get_app_paths(Rest, AllApps, [{App, AppDir} | Acc])
+            
+    ;   _           ->
+            case code:lib_dir(App) of
+                {error, bad_name}   -> throw(?PRV_ERROR({bad_name, App}))
+            ;   Path                -> get_app_paths(Rest, AllApps, [{App, Path} | Acc])
             end
     end.
 
-get_app_beams(App, Path) ->
-    Prefix = filename:join(atom_to_list(App), "ebin"),
-    load_files(Prefix, "*.beam", Path) ++
-        load_files(Prefix, "*.app", Path).
+    
+debug_files(App, Dir, X) ->
+    DebugFiles = [ Name || {Name, _} <- usort(X) ],
+    rebar_api:debug("Files[~p/~p]: ~p", [ App, Dir, DebugFiles ]),
+    X.    
+    
 
-
-get_app_extras(Apps, State) ->
-	rebar_api:info("Gathering ~p", [Apps]),
-    Extra = rebar_state:get(State, escript2_extra_files, []),
-    Prefix = "fubar",  %atom_to_list(App),
-    lists:foldl(fun({Wildcard, Dir}, Files) ->
-                        load_files(Prefix, Wildcard, Dir) ++ Files
-                end, [], Extra).
-
-
+%%%%% ------------------------------------------------------- %%%%%
+ 
+ 
+load_files(Prefix, "*", Dir) ->
+    Dirlen = length(Dir) + 1,
+    AllFiles = filelib:fold_files(Dir, "", true,
+        fun(F, Acc) ->
+            [ lists:nthtail(Dirlen, F) | Acc ]
+        end,
+        []),
+    [read_file(Prefix, Filename, Dir) || Filename <- AllFiles ];
+    
 load_files(Prefix, Wildcard, Dir) ->
     [read_file(Prefix, Filename, Dir)
-     || Filename <- filelib:wildcard(Wildcard, Dir)].
+        || Filename <- filelib:wildcard(Wildcard, Dir)].
 
+        
 read_file(Prefix, Filename, Dir) ->
     Filename1 = case Prefix of
-                    "" ->
-                        Filename;
-                    _ ->
-                        filename:join([Prefix, Filename])
+                    ""  -> Filename
+                ;   _   -> filename:join([Prefix, Filename])
                 end,
-    [dir_entries(filename:dirname(Filename1)),
-     {Filename1, file_contents(filename:join(Dir, Filename))}].
+    FilePath = filename:join(Dir, Filename),
+    case filelib:is_regular(FilePath) of
+        true    ->
+            [ dir_entries(filename:dirname(Filename1))
+            , {Filename1, file_contents(FilePath)}
+            ]
+    ;   false   -> []
+    end.
 
 file_contents(Filename) ->
     {ok, Bin} = file:read_file(Filename),
     Bin.
 
+    
 %% Given a filename, return zip archive dir entries for each sub-dir.
 %% Required to work around issues fixed in OTP-10071.
 dir_entries(File) ->

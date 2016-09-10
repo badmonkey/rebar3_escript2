@@ -28,7 +28,7 @@ init(State) ->
                                 {deps, ?DEPS},
                                 {example, "rebar3 escript2 clean"},
                                 {opts, []},
-                                {short_desc, "remove escript archives."},
+                                {short_desc, "Remove escript executables."},
                                 {desc, desc()}
                                 ]),
     {ok, rebar_state:add_provider(State, Provider)}.
@@ -37,7 +37,7 @@ desc() ->
     "Remove executable escript files".
 
 do(State) ->
-	Cwd = rebar_state:dir(State),
+    Cwd = rebar_state:dir(State),
     Providers = rebar_state:providers(State),
     rebar_hooks:run_all_hooks(
       Cwd, pre, {escript2, ?PROVIDER}, Providers, State),
@@ -61,8 +61,8 @@ do(State) ->
             end
     end,
 
-	rebar_hooks:run_all_hooks(
-	  Cwd, post, {escript2, ?PROVIDER}, Providers, State),
+    rebar_hooks:run_all_hooks(
+        Cwd, post, {escript2, ?PROVIDER}, Providers, State),
 
     Res.
 
@@ -74,7 +74,7 @@ clean_escript(State0, App) ->
     Filename = filename:join([rebar_dir:base_dir(State0), "bin",
                               rebar_state:get(State0, escript_name, AppName)]),
     rebar_api:debug("Deleting file ~s", [Filename]),
-	rebar_file_utils:delete_each([Filename]),
+    rebar_file_utils:delete_each([Filename]),
 
     {ok, State0}.
     

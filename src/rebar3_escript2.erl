@@ -6,7 +6,7 @@
 init(State) ->
     lists:foldl( fun provider_init/2
                , {ok, State}
-               , [ rebar3_escript2_escriptize
+               , [ rebar3_escript2_build
                  , rebar3_escript2_clean
                  ]).
 
