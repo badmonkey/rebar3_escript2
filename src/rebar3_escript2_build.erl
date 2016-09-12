@@ -117,8 +117,9 @@ escriptize(State0, App) ->
     ExtraFiles = usort(InclBeams ++ InclExtra),
     Files = get_nonempty(EbinFiles ++ ExtraFiles),
 
-    DefaultEmuArgs = ?FMT("%%! -escript main ~s -pz ~s/~s/ebin\n",
-                          [AppNameStr, AppNameStr, AppNameStr]),
+	ExtraEmuArgs = rebar_state:get(State, escript_extra_emu_args, ""),
+    DefaultEmuArgs = ?FMT("%%! -escript main ~s -pz ~s/~s/ebin ~s\n",
+                          [AppNameStr, AppNameStr, AppNameStr, ExtraEmuArgs]),
     EscriptSections =
         [ {shebang,
            def("#!", State, escript_shebang, "#!/usr/bin/env escript\n")}
