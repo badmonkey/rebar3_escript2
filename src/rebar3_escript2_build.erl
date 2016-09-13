@@ -161,7 +161,8 @@ get_app_beams(Apps, AllApps) ->
         
 get_app_extras(Apps, AllApps) ->
     gather_many_files(Apps, AllApps, priv, ["*"]) ++
-    gather_many_files(Apps, AllApps, include, ["*"]).
+    gather_many_files(Apps, AllApps, include, ["*"]) ++
+    gather_root_files(Apps, AllApps, priv, ["sys.config"]).
     
 
 %% Worry about this when we need those extra files - maybe reuse relx:overlays?
@@ -174,6 +175,17 @@ get_app_extras(Apps, AllApps) ->
                 
 %%%%% ------------------------------------------------------- %%%%%
   
+
+move_files(_App, Path, Dir, Wildcards) ->
+    FromDir = filename:join(Path, Dir),
+    [ load_files(".", W, FromDir) || W <- Wildcards ].
+
+gather_root_files(Apps, AllApps, Dir, Wildcards) ->
+    AppPaths = get_app_paths(Apps, AllApps, []),
+    [ debug_files(App, Dir, move_files(App, Path, Dir, Wildcards)) || {App, Path} <- AppPaths ].
+	
+
+
 
 -spec gather_files(atom(), string(), atom() | string(), string() ) -> list().
 
