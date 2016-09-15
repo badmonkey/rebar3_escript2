@@ -106,20 +106,26 @@ escriptize(State0, App) ->
     AllApps = rebar_state:all_deps(State)++rebar_state:project_apps(State),
     InclApps = find_deps(TopInclApps, AllApps),
 
-    InclBeams = get_app_beams(InclApps, AllApps),
-    InclExtra = get_app_extras(InclApps, AllApps),
+    InclAppPaths = get_app_paths(InclApps, AllApps, []),
+
 
     %% Construct the archive of everything in ebin/ dir -- put it on the
     %% top-level of the zip file so that code loading works properly.
     EbinPrefix = filename:join(AppNameStr, "ebin"),
-    EbinFiles = usort(load_files(EbinPrefix, "*", "ebin")),
+    EbinFiles = match_files(EbinPrefix, "*", "ebin"),
 
-    ExtraFiles = usort(InclBeams ++ InclExtra),
-    Files = get_nonempty(EbinFiles ++ ExtraFiles),
+    InclBeams = get_app_beams(InclAppPaths),
+    InclExtra = get_app_extras(InclAppPaths),
+
+	[{ThisApp, ThisAppPath}] = get_app_paths([ThisApp], AllApps, []),
+	ExtraFilesOverlay = rebar_state:get(State, escript_files, []),
+	InclOverlay = get_overlay_files([{"MainApp", ThisAppPath} | InclAppPaths], ExtraFilesOverlay),
+
+    Files = get_nonempty( usort([EbinFiles, InclBeams, InclExtra, InclOverlay]) ),
 
 	ExtraEmuArgs = rebar_state:get(State, escript_extra_emu_args, ""),
-    DefaultEmuArgs = ?FMT("%%! -escript main ~s -pz ~s/~s/ebin ~s\n",
-                          [AppNameStr, AppNameStr, AppNameStr, ExtraEmuArgs]),
+    DefaultEmuArgs = ?FMT("%%! -escript main ~s -pz ~s/~s/ebin -pz ~s ~s\n",
+                          [AppNameStr, AppNameStr, AppNameStr, AppNameStr, ExtraEmuArgs]),
     EscriptSections =
         [ {shebang,
            def("#!", State, escript_shebang, "#!/usr/bin/env escript\n")}
@@ -155,48 +161,80 @@ format_error(no_main_app) ->
 %% ===================================================================
 
 
-get_app_beams(Apps, AllApps) ->
-    gather_many_files(Apps, AllApps, ebin, ["*.beam", "*.app"]).
+get_app_beams(AppPaths) ->
+    gather_many_files(AppPaths, ebin, ["*.beam", "*.app"]).
 
         
-get_app_extras(Apps, AllApps) ->
-    gather_many_files(Apps, AllApps, priv, ["*"]) ++
-    gather_many_files(Apps, AllApps, include, ["*"]) ++
-    gather_root_files(Apps, AllApps, priv, ["sys.config"]).
-    
+get_app_extras(AppPaths) ->
+    gather_many_files(AppPaths, priv, ["*"]) ++
+    gather_many_files(AppPaths, include, ["*"]).
 
-%% Worry about this when we need those extra files - maybe reuse relx:overlays?
-%    Extra = rebar_state:get(State, escript2_extra_files, []),
-%    Prefix = "fubar",  %atom_to_list(App),
-%    lists:foldl(fun({Wildcard, Dir}, Files) ->
-%                        load_files(Prefix, Wildcard, Dir) ++ Files
-%                end, [], Extra).
+
+get_overlay_files(_, []) -> [];
+
+get_overlay_files(AppPaths, [ {copy, Name, Input} | Rest]) ->
+	LoadInputs = expand_input(AppPaths, Input),
+	rebar_api:info("OVER ~p", [LoadInputs]),
+	[ [] | get_overlay_files(AppPaths, Rest)];
+
+get_overlay_files(AppPaths, [_ | Rest]) ->  
+	get_overlay_files(AppPaths, Rest).
+
+
+expand_input(AppPaths, Path) ->
+	SplitPath = filename:split(Path),
+	SplitDir = lists:droplast(SplitPath),
+	FilePart = lists:last(SplitPath),
+	Wildcards = has_wildcards(FilePart),
+
+	case {filename:pathtype(Path), Wildcards} of
+		{absolute, false}	-> {file, Path}
+	;   {absolute, true}	-> {many, [filename:join(SplitDir)], FilePart}
+	;	{relative, false}	-> expand_anchor(AppPaths, SplitPath, undefined)
+	;	{relative, true}	-> expand_anchor(AppPaths, SplitDir, FilePart)
+	end.
+
+
+
+expand_anchor(AppPaths, [ "{MainApp}" | Rest ], undefined) ->
+	AppDir = find_app_path("MainApp", AppPaths),
+	{file, filename:join([ AppDir | Rest])};
+
+expand_anchor(AppPaths, [ "{MainApp}" | Rest ], FilePart) ->
+	AppDir = find_app_path("MainApp", AppPaths),
+	{many, [filename:join([ AppDir | Rest])], FilePart};
+
+expand_anchor(AppPaths, [ "{*}" | Rest ], undefined) ->
+	{many, [ filename:join([ Path | Rest]) || {App, Path} <- AppPaths, is_atom(App) ]};
+
+expand_anchor(AppPaths, [ "{*}" | Rest ], FilePart) ->
+	{many, [ filename:join([ Path | Rest]) || {App, Path} <- AppPaths, is_atom(App) ], FilePart};
+
+expand_anchor(_, PL, _) ->
+    throw(?PRV_ERROR({invalid_path, filename:join(PL)})).
+
+
+has_wildcards(Path) ->
+	lists:any(
+	  	fun	(X) when X =:= $*; X =:= $?; X =:= $[; X =:= ${ -> true
+		;	(_) -> false
+		end, Path).
+
+
+
+find_app_path(App, []) -> throw(?PRV_ERROR({bad_name, App}));
+find_app_path(App, [{App, Path} | _]) -> Path;
+find_app_path(App, [_ | Rest]) -> find_app_path(App, Rest).
+
+					 
 
                 
 %%%%% ------------------------------------------------------- %%%%%
   
 
-move_files(_App, Path, Dir, Wildcards) ->
-    FromDir = filename:join(Path, Dir),
-    [ load_files(".", W, FromDir) || W <- Wildcards ].
 
-gather_root_files(Apps, AllApps, Dir, Wildcards) ->
-    AppPaths = get_app_paths(Apps, AllApps, []),
-    [ debug_files(App, Dir, move_files(App, Path, Dir, Wildcards)) || {App, Path} <- AppPaths ].
-	
-
-
-
--spec gather_files(atom(), string(), atom() | string(), string() ) -> list().
-
-gather_files(App, Path, Dir, Wildcards) ->
-    FromDir = filename:join(Path, Dir),
-    ToDir = filename:join(App, Dir),
-    [ load_files(ToDir, W, FromDir) || W <- Wildcards ].
-    
-gather_many_files(Apps, AllApps, Dir, Wildcards) ->
-    AppPaths = get_app_paths(Apps, AllApps, []),
-    [ debug_files(App, Dir, gather_files(App, Path, Dir, Wildcards)) || {App, Path} <- AppPaths ].
+gather_many_files(AppPaths, Dir, Wildcards) ->
+    [ gather_app_files(App, Path, Dir, Wildcards) || {App, Path} <- AppPaths, is_atom(App) ].
 
 
 get_app_paths([], _, Acc) ->
@@ -215,47 +253,69 @@ get_app_paths([App | Rest], AllApps, Acc) ->
             end
     end.
 
-    
-debug_files(App, Dir, X) ->
-    DebugFiles = [ Name || {Name, _} <- usort(X) ],
-    rebar_api:debug("Files[~p/~p]: ~p", [ App, Dir, DebugFiles ]),
-    X.    
+
+
+-spec gather_app_files(atom(), string(), atom() | string(), string() ) -> list().
+
+gather_app_files(App, Path, Dir, Wildcards) ->
+    FromDir = filename:join(Path, Dir),
+    ToDir = filename:join(App, Dir),
+    [ match_files(FromDir, W, ToDir) || W <- Wildcards ].
     
 
 %%%%% ------------------------------------------------------- %%%%%
  
  
-load_files(Prefix, "*", Dir) ->
+match_files(Dir, "*", Prefix) ->
     Dirlen = length(Dir) + 1,
     AllFiles = filelib:fold_files(Dir, "", true,
         fun(F, Acc) ->
             [ lists:nthtail(Dirlen, F) | Acc ]
         end,
         []),
-    [read_file(Prefix, Filename, Dir) || Filename <- AllFiles ];
+    debug_match(Dir, "*", [ read_file(Dir, Filename, Prefix) || Filename <- AllFiles ]);
     
-load_files(Prefix, Wildcard, Dir) ->
-    [read_file(Prefix, Filename, Dir)
-        || Filename <- filelib:wildcard(Wildcard, Dir)].
+match_files(Dir, Wildcard, Prefix) ->
+    debug_match(Dir, Wildcard
+			   , [ read_file(Dir, Filename, Prefix)
+				   || Filename <- filelib:wildcard(Wildcard, Dir) ] ).
 
-        
-read_file(Prefix, Filename, Dir) ->
-    Filename1 = case Prefix of
-                    ""  -> Filename
-                ;   _   -> filename:join([Prefix, Filename])
-                end,
-    FilePath = filename:join(Dir, Filename),
-    case filelib:is_regular(FilePath) of
+
+debug_match(Dir, Wildcard, X) ->
+    DebugFiles = [ Name || {Name, _} <- usort(X) ],
+    rebar_api:debug("Matches ~s/~s~n     ~p", [ Dir, Wildcard, DebugFiles ]),
+    X.    
+
+
+
+%%%%% ------------------------------------------------------- %%%%%
+
+
+pathjoin("", Y) -> Y;
+pathjoin(X, Y) -> filename:join([X, Y]).
+	
+
+
+read_file(FromDir, FromFilename, ToPrefix) ->
+	read_file(FromDir, FromFilename, ToPrefix, FromFilename).
+
+
+read_file(FromDir, FromFilename, ToPrefix, ToFilename) ->
+	OutFilePath = pathjoin(ToPrefix, ToFilename),
+    InFilePath = filename:join(FromDir, FromFilename),
+    case filelib:is_regular(InFilePath) of
         true    ->
-            [ dir_entries(filename:dirname(Filename1))
-            , {Filename1, file_contents(FilePath)}
+            [ dir_entries(filename:dirname(OutFilePath))
+            , {OutFilePath, file_contents(InFilePath)}
             ]
     ;   false   -> []
     end.
 
+
 file_contents(Filename) ->
     {ok, Bin} = file:read_file(Filename),
     Bin.
+
 
     
 %% Given a filename, return zip archive dir entries for each sub-dir.
