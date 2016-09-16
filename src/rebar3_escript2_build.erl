@@ -117,9 +117,9 @@ escriptize(State0, App) ->
     InclBeams = get_app_beams(InclAppPaths),
     InclExtra = get_app_extras(InclAppPaths),
 
-	[{ThisApp, ThisAppPath}] = get_app_paths([ThisApp], AllApps, []),
+	[{ThisApp, ThisLibPath, ThisAppPath}] = get_app_paths([ThisApp], AllApps, []),
 	ExtraFilesOverlay = rebar_state:get(State, escript_files, []),
-	InclOverlay = get_overlay_files([{"MainApp", ThisAppPath} | InclAppPaths], ExtraFilesOverlay),
+	InclOverlay = get_overlay_files([{"MainApp", ThisLibPath, ThisAppPath} | InclAppPaths], ExtraFilesOverlay),
 
     Files = get_nonempty( usort([EbinFiles, InclBeams, InclExtra, InclOverlay]) ),
 
@@ -152,6 +152,12 @@ format_error({zip_error, AppName, ZipError}) ->
 format_error({bad_name, App}) ->
     io_lib:format("Failed to get ebin/ directory for "
                    "escript_incl_app: ~p", [App]);
+format_error({relative_path, Path}) ->
+    io_lib:format("Path may not be relative "
+                   "escript_files: ~p", [Path]);
+format_error({contains_wildcards, Path}) ->
+    io_lib:format("Path must not contain wildcard characters "
+                   "escript_files: ~p", [Path]);
 format_error(no_main_app) ->
     io_lib:format("Multiple project apps and {escript_main_app, atom()}."
                  " not set in rebar.config", []).
@@ -173,9 +179,24 @@ get_app_extras(AppPaths) ->
 get_overlay_files(_, []) -> [];
 
 get_overlay_files(AppPaths, [ {copy, Name, Input} | Rest]) ->
-	LoadInputs = expand_input(AppPaths, Input),
-	rebar_api:info("OVER ~p", [LoadInputs]),
-	[ [] | get_overlay_files(AppPaths, Rest)];
+	PrefixInfo = expand_name(AppPaths, Name),
+	InputInfo = expand_input(AppPaths, Input),
+
+	N =	case { PrefixInfo, InputInfo } of
+			{ {dir, Prefix}, 		 {file, Filename} }				->
+				read_many_files([Filename], Prefix)
+
+		;	{ {file_or_dir, Prefix}, {file, Filename} }				->
+				read_file(Filename, Prefix)
+
+		;	{ {_, Prefix}, 		 	 {many, ManyFiles} }			->
+				read_many_files(ManyFiles, Prefix)
+
+		;	{ {_, Prefix}, 		 	 {many, ManyDirs, Wildcard} }	->
+				[ match_files(Dir, Wildcard, Prefix) || Dir <- ManyDirs ]
+		end,
+
+	[ N | get_overlay_files(AppPaths, Rest)];
 
 get_overlay_files(AppPaths, [_ | Rest]) ->  
 	get_overlay_files(AppPaths, Rest).
@@ -195,6 +216,31 @@ expand_input(AppPaths, Path) ->
 	end.
 
 
+expand_name(_, "") -> {dir, ""};
+
+expand_name(AppPaths, Name) ->
+	SplitPath = filename:split(Name),
+	Type = guess_type(Name),
+
+	NewPath = expand_prefix(AppPaths, SplitPath),
+	HasWildcards = has_wildcards(NewPath),
+
+	case HasWildcards of
+		true	-> throw(?PRV_ERROR({contains_wildcards, Name}))
+	;	false	-> {Type, NewPath}
+	end.
+
+
+expand_prefix(AppPaths, [ "{MainApp}" | Rest ]) ->
+	AppDir = find_app_path("MainApp", AppPaths),
+	filename:join([ filename:basename(AppDir) | Rest ]);
+
+expand_prefix(AppPaths, [ "/" | Rest ]) ->
+	expand_prefix(AppPaths, Rest);
+
+expand_prefix(_, PathList) ->
+	filename:join(PathList).
+
 
 expand_anchor(AppPaths, [ "{MainApp}" | Rest ], undefined) ->
 	AppDir = find_app_path("MainApp", AppPaths),
@@ -211,7 +257,8 @@ expand_anchor(AppPaths, [ "{*}" | Rest ], FilePart) ->
 	{many, [ filename:join([ Path | Rest]) || {App, Path} <- AppPaths, is_atom(App) ], FilePart};
 
 expand_anchor(_, PL, _) ->
-    throw(?PRV_ERROR({invalid_path, filename:join(PL)})).
+    throw(?PRV_ERROR({relative_path, filename:join(PL)})).
+
 
 
 has_wildcards(Path) ->
@@ -223,10 +270,20 @@ has_wildcards(Path) ->
 
 
 find_app_path(App, []) -> throw(?PRV_ERROR({bad_name, App}));
-find_app_path(App, [{App, Path} | _]) -> Path;
+find_app_path(App, [{App, _, Path} | _]) -> Path;
 find_app_path(App, [_ | Rest]) -> find_app_path(App, Rest).
 
-					 
+find_lib_path(App, []) -> throw(?PRV_ERROR({bad_name, App}));
+find_lib_path(App, [{App, Path, _} | _]) -> Path;
+find_lib_path(App, [_ | Rest]) -> find_lib_path(App, Rest).
+
+
+guess_type(Path) ->
+	case ( lists:last(Path) =:= $/ ) of
+		true	-> dir
+	;	false	-> file_or_dir
+	end.
+
 
                 
 %%%%% ------------------------------------------------------- %%%%%
@@ -234,7 +291,7 @@ find_app_path(App, [_ | Rest]) -> find_app_path(App, Rest).
 
 
 gather_many_files(AppPaths, Dir, Wildcards) ->
-    [ gather_app_files(App, Path, Dir, Wildcards) || {App, Path} <- AppPaths, is_atom(App) ].
+    [ gather_app_files(App, Path, Dir, Wildcards) || {App, Path, _} <- AppPaths, is_atom(App) ].
 
 
 get_app_paths([], _, Acc) ->
@@ -243,13 +300,15 @@ get_app_paths([], _, Acc) ->
 get_app_paths([App | Rest], AllApps, Acc) ->    
     case rebar_app_utils:find(ec_cnv:to_binary(App), AllApps) of
         {ok, App1}  ->
-            AppDir = filename:absname(rebar_app_info:out_dir(App1)),
-            get_app_paths(Rest, AllApps, [{App, AppDir} | Acc])
+            LibDir = filename:absname(rebar_app_info:out_dir(App1)),
+            BaseDir = filename:absname(rebar_app_info:dir(App1)),
+            get_app_paths(Rest, AllApps, [{App, LibDir, BaseDir} | Acc])
             
     ;   _           ->
             case code:lib_dir(App) of
                 {error, bad_name}   -> throw(?PRV_ERROR({bad_name, App}))
-            ;   Path                -> get_app_paths(Rest, AllApps, [{App, Path} | Acc])
+            ;   Path                ->
+					get_app_paths(Rest, AllApps, [{App, Path, undefined} | Acc])
             end
     end.
 
@@ -295,18 +354,28 @@ pathjoin("", Y) -> Y;
 pathjoin(X, Y) -> filename:join([X, Y]).
 	
 
+read_many_files(FromFiles, ToPrefix) ->	
+	[ read_file( filename:dirname(X)
+			   , filename:basename(X)
+			   , ToPrefix )
+        || X <- FromFiles ].
+	
 
-read_file(FromDir, FromFilename, ToPrefix) ->
-	read_file(FromDir, FromFilename, ToPrefix, FromFilename).
+read_file(FromDir, Filename, ToPrefix) ->
+	read_file(FromDir, Filename, ToPrefix, Filename).
 
 
 read_file(FromDir, FromFilename, ToPrefix, ToFilename) ->
-	OutFilePath = pathjoin(ToPrefix, ToFilename),
     InFilePath = filename:join(FromDir, FromFilename),
-    case filelib:is_regular(InFilePath) of
+	OutFilePath = pathjoin(ToPrefix, ToFilename),
+	read_file(InFilePath, OutFilePath).
+
+
+read_file(FromFile, ToFile) ->
+    case filelib:is_regular(FromFile) of
         true    ->
-            [ dir_entries(filename:dirname(OutFilePath))
-            , {OutFilePath, file_contents(InFilePath)}
+            [ dir_entries(filename:dirname(ToFile))
+            , {ToFile, file_contents(FromFile)}
             ]
     ;   false   -> []
     end.
