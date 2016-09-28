@@ -98,6 +98,7 @@ escriptize(State0, App) ->
     ok = filelib:ensure_dir(Filename),
     State = rebar_state:escript_path(State0, Filename),
 
+
     %% Look for a list of other applications (dependencies) to include
     %% in the output file. We then use the .app files for each of these
     %% to pull in all the .beam files.
@@ -119,7 +120,10 @@ escriptize(State0, App) ->
 
 	[{ThisApp, ThisLibPath, ThisAppPath}] = get_app_paths([ThisApp], AllApps, []),
 	ExtraFilesOverlay = rebar_state:get(State, escript_files, []),
-	InclOverlay = get_overlay_files([{"MainApp", ThisLibPath, ThisAppPath} | InclAppPaths], ExtraFilesOverlay),
+	ExtraAppPaths = [ {"MainApp", ThisLibPath, ThisAppPath}
+					, {"Root", ThisLibPath, rebar_dir:root_dir(State)}
+					| InclAppPaths],
+	InclOverlay = get_overlay_files(ExtraAppPaths, ExtraFilesOverlay),
 
     Files = get_nonempty( usort([EbinFiles, InclBeams, InclExtra, InclOverlay]) ),
 
@@ -256,8 +260,13 @@ expand_anchor(AppPaths, [ "{*}" | Rest ], undefined) ->
 expand_anchor(AppPaths, [ "{*}" | Rest ], FilePart) ->
 	{many, [ filename:join([ Path | Rest]) || {App, Path} <- AppPaths, is_atom(App) ], FilePart};
 
-expand_anchor(_, PL, _) ->
-    throw(?PRV_ERROR({relative_path, filename:join(PL)})).
+expand_anchor(AppPaths, PathList, undefined) ->
+	RootDir = find_app_path("Root", AppPaths),
+	{file, filename:join([ RootDir | PathList])};
+
+expand_anchor(AppPaths, PathList, FilePart) ->
+	RootDir = find_app_path("Root", AppPaths),
+	{many, [filename:join([ RootDir | PathList])], FilePart}.
 
 
 
